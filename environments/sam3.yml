@@ -1,0 +1,13 @@
+name: sam3
+channels: [conda-forge]
+dependencies:
+  - python=3.12
+  - pip
+  - setuptools<81
+  - pip:
+      - einops
+      - psutil
+      - numpy==1.26.4
+      - opencv-python==4.11.0.86
+      - Pillow>=10,<13
+# Install torch/torchvision from cu128, then the pinned upstream editable package.

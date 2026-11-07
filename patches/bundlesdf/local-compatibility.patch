@@ -1,0 +1,453 @@
+diff --git a/BundleTrack/CMakeLists.txt b/BundleTrack/CMakeLists.txt
+index f0b1d60..9b15a98 100644
+--- a/BundleTrack/CMakeLists.txt
++++ b/BundleTrack/CMakeLists.txt
+@@ -43,7 +43,9 @@ if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_LESS "11.0")
+ endif()
+ 
+ # Set CUDA architectures based on CUDA version
+-if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL "11.8")
++if(CMAKE_CUDA_ARCHITECTURES)
++    # Respect architectures selected by the caller (e.g. 89 for RTX 4060).
++elseif(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL "11.8")
+     set(CMAKE_CUDA_ARCHITECTURES "52;60;61;70;75;80;86;90")
+ else()
+     set(CMAKE_CUDA_ARCHITECTURES "52;60;61;70;75;80;86")
+@@ -65,11 +67,16 @@ set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+ 
+ # Find required packages with version specifications where appropriate
+ find_package(Boost 1.65.0 REQUIRED COMPONENTS system program_options serialization)
++# Some system VTK configurations omit this transitive imported target.
++find_package(jsoncpp CONFIG QUIET)
+ find_package(PCL 1.8 REQUIRED)
+ find_package(Eigen3 3.3 REQUIRED)
+-find_package(OpenCV 4.0 REQUIRED)
++find_package(OpenCV 4.0 REQUIRED COMPONENTS core imgproc imgcodecs highgui calib3d features2d rgbd cudafeatures2d cudaimgproc cudaoptflow)
+ find_package(OpenMP REQUIRED)
+ find_package(yaml-cpp 0.6 REQUIRED)
++if(TARGET yaml-cpp::yaml-cpp)
++    set(YAML_CPP_LIBRARIES yaml-cpp::yaml-cpp)
++endif()
+ find_package(BLAS REQUIRED)
+ find_package(OpenGL REQUIRED)
+ find_package(CUDA 11.0 REQUIRED)
+@@ -78,11 +85,9 @@ find_package(LAPACK REQUIRED)
+ find_package(pybind11 2.6 REQUIRED)
+ find_package(Python COMPONENTS Interpreter Development REQUIRED)
+ find_package(ZeroMQ QUIET)
+-if(NOT ZeroMQ_FOUND)
+-    find_library(ZMQ_LIB zmq)
+-    if(NOT ZMQ_LIB)
+-        message(FATAL_ERROR "ZeroMQ library not found")
+-    endif()
++find_library(ZMQ_LIB zmq)
++if(NOT ZMQ_LIB)
++    message(FATAL_ERROR "ZeroMQ library not found")
+ endif()
+ 
+ set(PYBIND11_CPP_STANDARD -std=c++17)
+@@ -153,7 +158,6 @@ set_target_properties(MY_CUDA_LIB PROPERTIES
+     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+ )
+ target_link_libraries(MY_CUDA_LIB PUBLIC
+-    yaml-cpp
+     ${YAML_CPP_LIBRARIES}
+     ${Boost_LIBRARIES}
+     ${OpenCV_LIBRARIES}
+@@ -161,6 +165,20 @@ target_link_libraries(MY_CUDA_LIB PUBLIC
+     ${CUDA_LIBRARIES}
+ )
+ 
++# Conda's compiler uses its own sysroot. Expose dependency-specific system
++# headers, without mixing the host's libc headers into that sysroot.
++if(CMAKE_CXX_COMPILER MATCHES "conda")
++    set(BUNDLESDF_SYSTEM_HEADERS "${CMAKE_CURRENT_BINARY_DIR}/system-headers")
++    file(MAKE_DIRECTORY "${BUNDLESDF_SYSTEM_HEADERS}")
++    foreach(header yaml-cpp zmq.hpp zmq.h zmq_addon.hpp flann lz4.h lz4hc.h lz4frame.h)
++        if(EXISTS "/usr/include/${header}" AND NOT EXISTS "${BUNDLESDF_SYSTEM_HEADERS}/${header}")
++            file(CREATE_LINK "/usr/include/${header}"
++                "${BUNDLESDF_SYSTEM_HEADERS}/${header}" SYMBOLIC)
++        endif()
++    endforeach()
++    target_include_directories(MY_CUDA_LIB PUBLIC "${BUNDLESDF_SYSTEM_HEADERS}")
++endif()
++
+ # Main library
+ add_library(${PROJECT_NAME} SHARED ${MY_SRC})
+ set_target_properties(${PROJECT_NAME} PROPERTIES
+@@ -179,7 +197,7 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
+     ${GLUT_LIBRARIES}
+     ${PYTHON_LIBRARIES}
+     ${G2O_LIBS}
+-    zmq
++    ${ZMQ_LIB}
+ )
+ 
+ if(DEFINED GUROBI)
+@@ -199,7 +217,6 @@ set_target_properties(my_cpp PROPERTIES
+ target_link_libraries(my_cpp PRIVATE 
+     ${PROJECT_NAME}
+     MY_CUDA_LIB
+-    yaml-cpp
+     ${YAML_CPP_LIBRARIES}
+     ${Boost_LIBRARIES}
+     ${OpenCV_LIBRARIES}
+@@ -210,5 +227,5 @@ target_link_libraries(my_cpp PRIVATE
+     ${CUDA_CUDART_LIBRARY}
+     ${PYTHON_LIBRARIES}
+     ${OpenMP_CXX_FLAGS}
+-    zmq
++    ${ZMQ_LIB}
+ )
+diff --git a/BundleTrack/src/Frame.cpp b/BundleTrack/src/Frame.cpp
+index 8aada28..6223b4d 100644
+--- a/BundleTrack/src/Frame.cpp
++++ b/BundleTrack/src/Frame.cpp
+@@ -44,9 +44,9 @@ Frame::Frame(const py::array_t<uchar> &color, const py::array_t<float> &depth, c
+   _H = _color.rows;
+   _W = _color.cols;
+   
+-  _cloud = boost::make_shared<PointCloudRGBNormal>();
+-  _cloud_down = boost::make_shared<PointCloudRGBNormal>();
+-  _real_model = boost::make_shared<PointCloudRGBNormal>();
++  _cloud.reset(new PointCloudRGBNormal());
++  _cloud_down.reset(new PointCloudRGBNormal());
++  _real_model.reset(new PointCloudRGBNormal());
+   
+   _depth_gpu = nullptr;
+   _color_gpu = nullptr;
+@@ -114,8 +114,8 @@ void Frame::init()
+ 
+   Utils::normalizeRotationMatrix(_pose_in_model);
+ 
+-  _cloud = boost::make_shared<pcl::PointCloud<pcl::PointXYZRGBNormal>>();
+-  _cloud_down = boost::make_shared<pcl::PointCloud<pcl::PointXYZRGBNormal>>();
++  _cloud.reset(new pcl::PointCloud<pcl::PointXYZRGBNormal>());
++  _cloud_down.reset(new pcl::PointCloud<pcl::PointXYZRGBNormal>());
+ 
+   if (_roi(0)<0 || _roi(0)>=_W || _roi(1)<0 || _roi(1)>=_W || _roi(2)<0 || _roi(2)>=_H || _roi(3)<0 || _roi(3)>=_H)
+   {
+diff --git a/BundleTrack/src/Utils.cpp b/BundleTrack/src/Utils.cpp
+index 7ee78ad..04cd265 100644
+--- a/BundleTrack/src/Utils.cpp
++++ b/BundleTrack/src/Utils.cpp
+@@ -106,7 +106,7 @@ colImage: 8UC3
+ objDepth: 16UC1
+ 	*******************************************************************************************************/
+ template<class PointT>
+-void convert3dOrganizedRGB(cv::Mat &objDepth, cv::Mat &colImage, Eigen::Matrix3f &camIntrinsic, boost::shared_ptr<pcl::PointCloud<PointT>> objCloud)
++void convert3dOrganizedRGB(cv::Mat &objDepth, cv::Mat &colImage, Eigen::Matrix3f &camIntrinsic, PclSharedPtr<pcl::PointCloud<PointT>> objCloud)
+ {
+   const int imgWidth = objDepth.cols;
+   const int imgHeight = objDepth.rows;
+@@ -143,8 +143,8 @@ void convert3dOrganizedRGB(cv::Mat &objDepth, cv::Mat &colImage, Eigen::Matrix3f
+       }
+     }
+ }
+-template void convert3dOrganizedRGB(cv::Mat &objDepth, cv::Mat &colImage, Eigen::Matrix3f &camIntrinsic, boost::shared_ptr<pcl::PointCloud<pcl::PointXYZRGB>> objCloud);
+-template void convert3dOrganizedRGB(cv::Mat &objDepth, cv::Mat &colImage, Eigen::Matrix3f &camIntrinsic, boost::shared_ptr<pcl::PointCloud<pcl::PointXYZRGBNormal>> objCloud);
++template void convert3dOrganizedRGB(cv::Mat &objDepth, cv::Mat &colImage, Eigen::Matrix3f &camIntrinsic, PclSharedPtr<pcl::PointCloud<pcl::PointXYZRGB>> objCloud);
++template void convert3dOrganizedRGB(cv::Mat &objDepth, cv::Mat &colImage, Eigen::Matrix3f &camIntrinsic, PclSharedPtr<pcl::PointCloud<pcl::PointXYZRGBNormal>> objCloud);
+ 
+ 
+ 
+@@ -156,7 +156,7 @@ template void convert3dOrganizedRGB(cv::Mat &objDepth, cv::Mat &colImage, Eigen:
+ //@dst: target
+ //@score_thres: squared dist thres to account for final per point dist
+ template<class PointT>
+-float pointToPlaneICP(boost::shared_ptr<pcl::PointCloud<PointT> > src, boost::shared_ptr<pcl::PointCloud<PointT> > dst, Eigen::Matrix4f &offsetTransform, int max_iter, float rejection_angle, float max_corres_dist, float score_thres)
++float pointToPlaneICP(PclSharedPtr<pcl::PointCloud<PointT> > src, PclSharedPtr<pcl::PointCloud<PointT> > dst, Eigen::Matrix4f &offsetTransform, int max_iter, float rejection_angle, float max_corres_dist, float score_thres)
+ {
+ 
+   PointCloudNormal::Ptr modelCloud(new PointCloudNormal);
+@@ -236,8 +236,8 @@ float pointToPlaneICP(boost::shared_ptr<pcl::PointCloud<PointT> > src, boost::sh
+   return reg.getFitnessScore(score_thres);
+ 
+ }
+-template float pointToPlaneICP<pcl::PointXYZRGBNormal>(boost::shared_ptr<pcl::PointCloud<pcl::PointXYZRGBNormal> > pclSegment, boost::shared_ptr<pcl::PointCloud<pcl::PointXYZRGBNormal> > pclModel, Eigen::Matrix4f &offsetTransform, int max_iter, float rejection_angle, float max_corres_dist, float score_thres);
+-template float pointToPlaneICP<pcl::PointSurfel>(boost::shared_ptr<pcl::PointCloud<pcl::PointSurfel> > pclSegment, boost::shared_ptr<pcl::PointCloud<pcl::PointSurfel> > pclModel, Eigen::Matrix4f &offsetTransform, int max_iter, float rejection_angle, float max_corres_dist, float score_thres);
++template float pointToPlaneICP<pcl::PointXYZRGBNormal>(PclSharedPtr<pcl::PointCloud<pcl::PointXYZRGBNormal> > pclSegment, PclSharedPtr<pcl::PointCloud<pcl::PointXYZRGBNormal> > pclModel, Eigen::Matrix4f &offsetTransform, int max_iter, float rejection_angle, float max_corres_dist, float score_thres);
++template float pointToPlaneICP<pcl::PointSurfel>(PclSharedPtr<pcl::PointCloud<pcl::PointSurfel> > pclSegment, PclSharedPtr<pcl::PointCloud<pcl::PointSurfel> > pclModel, Eigen::Matrix4f &offsetTransform, int max_iter, float rejection_angle, float max_corres_dist, float score_thres);
+ 
+ 
+ 
+@@ -255,7 +255,7 @@ template bool isPclPointNormalValid(pcl::PointXYZRGBNormal pt);
+ 
+ 
+ template<class PointT>
+-void outlierRemovalRadius(boost::shared_ptr<pcl::PointCloud<PointT> > cloud_in, boost::shared_ptr<pcl::PointCloud<PointT> > cloud_out, float radius, int min_num)
++void outlierRemovalRadius(PclSharedPtr<pcl::PointCloud<PointT> > cloud_in, PclSharedPtr<pcl::PointCloud<PointT> > cloud_out, float radius, int min_num)
+ {
+   pcl::RadiusOutlierRemoval<PointT> outrem;
+   outrem.setInputCloud(cloud_in);
+@@ -263,11 +263,11 @@ void outlierRemovalRadius(boost::shared_ptr<pcl::PointCloud<PointT> > cloud_in,
+   outrem.setMinNeighborsInRadius (min_num);
+   outrem.filter(*cloud_out);
+ }
+-template void outlierRemovalRadius(boost::shared_ptr<pcl::PointCloud<pcl::PointXYZRGBNormal> > cloud_in, boost::shared_ptr<pcl::PointCloud<pcl::PointXYZRGBNormal> > cloud_out, float radius, int min_num);
++template void outlierRemovalRadius(PclSharedPtr<pcl::PointCloud<pcl::PointXYZRGBNormal> > cloud_in, PclSharedPtr<pcl::PointCloud<pcl::PointXYZRGBNormal> > cloud_out, float radius, int min_num);
+ 
+ 
+ template<class PointT>
+-void outlierRemovalStatistic(boost::shared_ptr<pcl::PointCloud<PointT> > cloud_in, boost::shared_ptr<pcl::PointCloud<PointT> > cloud_out, float std_mul, int num)
++void outlierRemovalStatistic(PclSharedPtr<pcl::PointCloud<PointT> > cloud_in, PclSharedPtr<pcl::PointCloud<PointT> > cloud_out, float std_mul, int num)
+ {
+   pcl::StatisticalOutlierRemoval<PointT> sor;
+   sor.setInputCloud(cloud_in);
+@@ -275,24 +275,24 @@ void outlierRemovalStatistic(boost::shared_ptr<pcl::PointCloud<PointT> > cloud_i
+   sor.setStddevMulThresh(std_mul);
+   sor.filter(*cloud_out);
+ }
+-template void outlierRemovalStatistic(boost::shared_ptr<pcl::PointCloud<pcl::PointXYZRGBNormal> > cloud_in, boost::shared_ptr<pcl::PointCloud<pcl::PointXYZRGBNormal> > cloud_out, float std_mul, int num);
++template void outlierRemovalStatistic(PclSharedPtr<pcl::PointCloud<pcl::PointXYZRGBNormal> > cloud_in, PclSharedPtr<pcl::PointCloud<pcl::PointXYZRGBNormal> > cloud_out, float std_mul, int num);
+ 
+ template<class PointT>
+-void downsamplePointCloud(boost::shared_ptr<pcl::PointCloud<PointT> > cloud_in, boost::shared_ptr<pcl::PointCloud<PointT> > cloud_out, float vox_size)
++void downsamplePointCloud(PclSharedPtr<pcl::PointCloud<PointT> > cloud_in, PclSharedPtr<pcl::PointCloud<PointT> > cloud_out, float vox_size)
+ {
+   pcl::VoxelGrid<PointT> vox;
+   vox.setInputCloud(cloud_in);
+   vox.setLeafSize(vox_size, vox_size, vox_size);
+   vox.filter(*cloud_out);
+ }
+-template void downsamplePointCloud<pcl::PointXYZRGBNormal>(boost::shared_ptr<pcl::PointCloud<pcl::PointXYZRGBNormal> > cloud_in, boost::shared_ptr<pcl::PointCloud<pcl::PointXYZRGBNormal> > cloud_out, float vox_size);
+-template void downsamplePointCloud<pcl::PointXYZRGB>(boost::shared_ptr<pcl::PointCloud<pcl::PointXYZRGB> > cloud_in, boost::shared_ptr<pcl::PointCloud<pcl::PointXYZRGB> > cloud_out, float vox_size);
+-template void downsamplePointCloud<pcl::PointXYZ>(boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ> > cloud_in, boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ> > cloud_out, float vox_size);
+-template void downsamplePointCloud<pcl::PointNormal>(boost::shared_ptr<pcl::PointCloud<pcl::PointNormal> > cloud_in, boost::shared_ptr<pcl::PointCloud<pcl::PointNormal> > cloud_out, float vox_size);
+-template void downsamplePointCloud<pcl::PointSurfel>(boost::shared_ptr<pcl::PointCloud<pcl::PointSurfel> > cloud_in, boost::shared_ptr<pcl::PointCloud<pcl::PointSurfel> > cloud_out, float vox_size);
++template void downsamplePointCloud<pcl::PointXYZRGBNormal>(PclSharedPtr<pcl::PointCloud<pcl::PointXYZRGBNormal> > cloud_in, PclSharedPtr<pcl::PointCloud<pcl::PointXYZRGBNormal> > cloud_out, float vox_size);
++template void downsamplePointCloud<pcl::PointXYZRGB>(PclSharedPtr<pcl::PointCloud<pcl::PointXYZRGB> > cloud_in, PclSharedPtr<pcl::PointCloud<pcl::PointXYZRGB> > cloud_out, float vox_size);
++template void downsamplePointCloud<pcl::PointXYZ>(PclSharedPtr<pcl::PointCloud<pcl::PointXYZ> > cloud_in, PclSharedPtr<pcl::PointCloud<pcl::PointXYZ> > cloud_out, float vox_size);
++template void downsamplePointCloud<pcl::PointNormal>(PclSharedPtr<pcl::PointCloud<pcl::PointNormal> > cloud_in, PclSharedPtr<pcl::PointCloud<pcl::PointNormal> > cloud_out, float vox_size);
++template void downsamplePointCloud<pcl::PointSurfel>(PclSharedPtr<pcl::PointCloud<pcl::PointSurfel> > cloud_in, PclSharedPtr<pcl::PointCloud<pcl::PointSurfel> > cloud_out, float vox_size);
+ 
+ template<class PointT>
+-void passFilterPointCloud(boost::shared_ptr<pcl::PointCloud<PointT> > cloud_in, boost::shared_ptr<pcl::PointCloud<PointT> > cloud_out, const std::string &axis, float min, float max)
++void passFilterPointCloud(PclSharedPtr<pcl::PointCloud<PointT> > cloud_in, PclSharedPtr<pcl::PointCloud<PointT> > cloud_out, const std::string &axis, float min, float max)
+ {
+   pcl::PassThrough<PointT> pass;
+   pass.setInputCloud (cloud_in);
+@@ -300,8 +300,8 @@ void passFilterPointCloud(boost::shared_ptr<pcl::PointCloud<PointT> > cloud_in,
+   pass.setFilterLimits (min, max);
+   pass.filter (*cloud_out);
+ }
+-template void passFilterPointCloud<pcl::PointXYZRGBNormal>(boost::shared_ptr<pcl::PointCloud<pcl::PointXYZRGBNormal> > cloud_in, boost::shared_ptr<pcl::PointCloud<pcl::PointXYZRGBNormal> > cloud_out, const std::string &axis, float min, float max);
+-template void passFilterPointCloud<pcl::PointXYZRGB>(boost::shared_ptr<pcl::PointCloud<pcl::PointXYZRGB> > cloud_in, boost::shared_ptr<pcl::PointCloud<pcl::PointXYZRGB> > cloud_out, const std::string &axis, float min, float max);
++template void passFilterPointCloud<pcl::PointXYZRGBNormal>(PclSharedPtr<pcl::PointCloud<pcl::PointXYZRGBNormal> > cloud_in, PclSharedPtr<pcl::PointCloud<pcl::PointXYZRGBNormal> > cloud_out, const std::string &axis, float min, float max);
++template void passFilterPointCloud<pcl::PointXYZRGB>(PclSharedPtr<pcl::PointCloud<pcl::PointXYZRGB> > cloud_in, PclSharedPtr<pcl::PointCloud<pcl::PointXYZRGB> > cloud_out, const std::string &axis, float min, float max);
+ 
+ //Return argsort indices
+ template <typename T>
+diff --git a/BundleTrack/src/Utils.h b/BundleTrack/src/Utils.h
+index 6a8a09f..81850d6 100644
+--- a/BundleTrack/src/Utils.h
++++ b/BundleTrack/src/Utils.h
+@@ -65,6 +65,7 @@
+ #include <pcl/common/transforms.h>
+ #include <pcl/common/pca.h>
+ #include <pcl/common/distances.h>
++#include <pcl/common/geometry.h>
+ #include <pcl/features/fpfh.h>
+ #include <pcl/features/fpfh_omp.h>
+ #include <pcl/features/normal_3d_omp.h>
+@@ -167,6 +168,11 @@ using ull = unsigned long long;
+ 
+ namespace Utils
+ {
++#if PCL_VERSION_COMPARE(>=, 1, 11, 0)
++template<class T> using PclSharedPtr = std::shared_ptr<T>;
++#else
++template<class T> using PclSharedPtr = boost::shared_ptr<T>;
++#endif
+ class Timer
+ {
+ public:
+@@ -212,29 +218,29 @@ int str2type(std::string s);
+ float rotationGeodesicDistance(const Eigen::Matrix3f &R1, const Eigen::Matrix3f &R2);
+ float rotationGeodesicDistanceIgnoreRotationAroundCamZ(const Eigen::Matrix3f &R1, const Eigen::Matrix3f &R2);
+ template<class PointT>
+-void convert3dOrganizedRGB(cv::Mat &objDepth, cv::Mat &colImage, Eigen::Matrix3f &camIntrinsic, boost::shared_ptr<pcl::PointCloud<PointT>> objCloud);
++void convert3dOrganizedRGB(cv::Mat &objDepth, cv::Mat &colImage, Eigen::Matrix3f &camIntrinsic, PclSharedPtr<pcl::PointCloud<PointT>> objCloud);
+ template<class PointT>
+-float pointToPlaneICP(boost::shared_ptr<pcl::PointCloud<PointT> > pclSegment,
+-                     boost::shared_ptr<pcl::PointCloud<PointT> > pclModel,
++float pointToPlaneICP(PclSharedPtr<pcl::PointCloud<PointT> > pclSegment,
++                     PclSharedPtr<pcl::PointCloud<PointT> > pclModel,
+                      Eigen::Matrix4f &offsetTransform, int max_iter=30, float rejection_angle=60, float max_corres_dist=0.01, float score_thres=1e-4);
+ 
+ float pointToPointICP(pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr src,pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr dst,                Eigen::Matrix4f &offsetTransform, int max_iter, float rejection_angle, float max_corres_dist, float score_thres);
+ 
+ 
+ template<class PointT>
+-void outlierRemovalRadius(boost::shared_ptr<pcl::PointCloud<PointT> > cloud_in, boost::shared_ptr<pcl::PointCloud<PointT> > cloud_out, float radius, int min_num);
++void outlierRemovalRadius(PclSharedPtr<pcl::PointCloud<PointT> > cloud_in, PclSharedPtr<pcl::PointCloud<PointT> > cloud_out, float radius, int min_num);
+ 
+ template<class PointT>
+-void outlierRemovalStatistic(boost::shared_ptr<pcl::PointCloud<PointT> > cloud_in, boost::shared_ptr<pcl::PointCloud<PointT> > cloud_out, float std_mul, int num);
++void outlierRemovalStatistic(PclSharedPtr<pcl::PointCloud<PointT> > cloud_in, PclSharedPtr<pcl::PointCloud<PointT> > cloud_out, float std_mul, int num);
+ 
+ template<class PointType>
+-void downsamplePointCloud(boost::shared_ptr<pcl::PointCloud<PointType> > cloud_in, boost::shared_ptr<pcl::PointCloud<PointType> > cloud_out, float vox_size);
++void downsamplePointCloud(PclSharedPtr<pcl::PointCloud<PointType> > cloud_in, PclSharedPtr<pcl::PointCloud<PointType> > cloud_out, float vox_size);
+ 
+ template<class PointT>
+-void passFilterPointCloud(boost::shared_ptr<pcl::PointCloud<PointT> > cloud_in, boost::shared_ptr<pcl::PointCloud<PointT> > cloud_out, const std::string &axis, float min, float max);
++void passFilterPointCloud(PclSharedPtr<pcl::PointCloud<PointT> > cloud_in, PclSharedPtr<pcl::PointCloud<PointT> > cloud_out, const std::string &axis, float min, float max);
+ 
+ template <class PointT>
+-void calNormalIntegralImage(boost::shared_ptr<pcl::PointCloud<PointT>> cloud, int method, float max_depth_change_factor, float smooth_size,bool depth_dependent_smooth);
++void calNormalIntegralImage(PclSharedPtr<pcl::PointCloud<PointT>> cloud, int method, float max_depth_change_factor, float smooth_size,bool depth_dependent_smooth);
+ 
+ 
+ template <typename T>
+@@ -245,7 +251,7 @@ void normalizeRotationMatrix(Eigen::Matrix3f &R);
+ void normalizeRotationMatrix(Eigen::Matrix4f &pose);
+ 
+ template<class PointT>
+-void cloudAMinusCloudB(boost::shared_ptr<pcl::PointCloud<PointT>> cloudA, boost::shared_ptr<pcl::PointCloud<PointT>> cloudB, boost::shared_ptr<pcl::PointCloud<PointT>> cloud_out, const float dist_thres);
++void cloudAMinusCloudB(PclSharedPtr<pcl::PointCloud<PointT>> cloudA, PclSharedPtr<pcl::PointCloud<PointT>> cloudB, PclSharedPtr<pcl::PointCloud<PointT>> cloud_out, const float dist_thres);
+ 
+ bool isPixelInsideImage(const int H, const int W, float u, float v);
+ 
+@@ -320,4 +326,4 @@ template <typename PointT, typename Scalar>
+ 
+ 
+ 
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/Utils.py b/Utils.py
+index 9fcebe3..f8f9f66 100644
+--- a/Utils.py
++++ b/Utils.py
+@@ -278,8 +278,8 @@ def chamfer_distance_between_clouds_mutual(pts1,pts2):
+ 
+ def trimesh_clean(mesh):
+   mesh.merge_vertices()
+-  mesh.remove_degenerate_faces()
+-  mesh.remove_duplicate_faces()
++  mesh.update_faces(mesh.nondegenerate_faces())
++  mesh.update_faces(mesh.unique_faces())
+   mesh.remove_infinite_values()
+   mesh.remove_unreferenced_vertices()
+   return mesh
+diff --git a/loftr_wrapper.py b/loftr_wrapper.py
+index 002a08c..5180d04 100644
+--- a/loftr_wrapper.py
++++ b/loftr_wrapper.py
+@@ -17,7 +17,11 @@ from Utils import *
+ 
+ 
+ class LoftrRunner:
+-  def __init__(self):
++  def __init__(self, batch_size=None):
++    # Bound peak matching memory on GPUs shared with the neural reconstruction.
++    self.batch_size = int(os.environ.get('BUNDLESDF_LOFTR_BATCH_SIZE', '1') if batch_size is None else batch_size)
++    if self.batch_size < 1:
++      raise ValueError('LoFTR batch_size must be positive')
+     default_cfg['match_coarse']['thr'] = 0.2
+     print("default_cfg",default_cfg)
+     self.matcher = LoFTR(config=default_cfg)
+@@ -30,30 +34,30 @@ class LoftrRunner:
+     '''
+     @rgbAs: (N,H,W,C)
+     '''
+-    image0 = torch.from_numpy(rgbAs).permute(0,3,1,2).float().cuda()
+-    image1 = torch.from_numpy(rgbBs).permute(0,3,1,2).float().cuda()
+-    if image0.shape[-1]==3:
+-      image0 = torchvision.transforms.functional.rgb_to_grayscale(image0)
+-      image1 = torchvision.transforms.functional.rgb_to_grayscale(image1)
+-    image0 = image0/255.0
+-    image1 = image1/255.0
+-    last_data = {'image0': image0, 'image1': image1}
+-    logging.info(f"image0: {last_data['image0'].shape}")
+-
+-    batch_size = 64
++    if len(rgbAs) != len(rgbBs):
++      raise ValueError('LoFTR requires equal numbers of image pairs')
++    if len(rgbAs) == 0:
++      return []
+     ret_keys = ['mkpts0_f','mkpts1_f','mconf','m_bids']
++    last_data = {k: [] for k in ret_keys}
++    logging.info(f"LoFTR pairs: {len(rgbAs)}, batch_size: {self.batch_size}")
+     with torch.cuda.amp.autocast(enabled=True):
+-      i_b = 0
+-      for b in range(0,len(last_data['image0']),batch_size):
+-        tmp = {'image0': last_data['image0'][b:b+batch_size], 'image1': last_data['image1'][b:b+batch_size]}
+-        with torch.no_grad():
+-          self.matcher(tmp)
+-        tmp['m_bids'] += i_b
++      for b in range(0,len(rgbAs),self.batch_size):
++        tmp = {}
++        for key, images in [('image0', rgbAs), ('image1', rgbBs)]:
++          chunk = np.ascontiguousarray(images[b:b+self.batch_size])
++          if chunk.ndim == 3:
++            chunk = chunk[..., None]
++          tensor = torch.from_numpy(chunk).permute(0,3,1,2).float().cuda()
++          if tensor.shape[1] == 3:
++            tensor = torchvision.transforms.functional.rgb_to_grayscale(tensor)
++          tmp[key] = tensor / 255.0
++        del tensor
++        self.matcher(tmp)
++        tmp['m_bids'] += b
+         for k in ret_keys:
+-          if k not in last_data:
+-            last_data[k] = []
+-          last_data[k].append(tmp[k])
+-        i_b += len(tmp['image0'])
++          last_data[k].append(tmp[k].cpu())
++        del tmp
+ 
+     logging.info("net forward")
+ 
+@@ -65,7 +69,8 @@ class LoftrRunner:
+     mkpts1 = last_data['mkpts1_f'].cpu().numpy()
+     mconf = last_data['mconf'].cpu().numpy()
+     pair_ids = last_data['m_bids'].cpu().numpy()
+-    logging.info(f"mconf, {mconf.min()} {mconf.max()}")
++    if len(mconf):
++      logging.info(f"mconf, {mconf.min()} {mconf.max()}")
+     logging.info(f'pair_ids {pair_ids.shape}')
+     corres = np.concatenate((mkpts0.reshape(-1,2),mkpts1.reshape(-1,2),mconf.reshape(-1,1)),axis=-1).reshape(-1,5).astype(np.float32)
+ 
+@@ -76,7 +81,7 @@ class LoftrRunner:
+       corres_tmp.append(cur_corres)
+     corres = corres_tmp
+ 
+-    del last_data, image0, image1
++    del last_data
+     torch.cuda.empty_cache()
+ 
+-    return corres
+\ No newline at end of file
++    return corres
+diff --git a/nerf_runner.py b/nerf_runner.py
+index 2a8fe4c..e0aee0b 100644
+--- a/nerf_runner.py
++++ b/nerf_runner.py
+@@ -1486,7 +1486,7 @@ class NerfRunner:
+     tex_image = torch.zeros((tex_res,tex_res,3)).cuda().float()
+     weight_tex_image = torch.zeros(tex_image.shape[:-1]).cuda().float()
+     mesh.merge_vertices()
+-    mesh.remove_duplicate_faces()
++    mesh.update_faces(mesh.unique_faces())
+     mesh = mesh.unwrap()
+     H,W = tex_image.shape[:2]
+     uvs_tex = (mesh.visual.uv*np.array([W-1,H-1]).reshape(1,2))    #(n_V,2)
+@@ -1538,10 +1538,14 @@ class NerfRunner:
+       tex_image[uvs_unique[:,1],uvs_unique[:,0]] += torch.from_numpy(ray_colors).cuda().float()[unique_ids]*cur_weights.reshape(-1,1)
+       weight_tex_image[uvs_unique[:,1], uvs_unique[:,0]] += cur_weights
+ 
+-    tex_image = tex_image/weight_tex_image[...,None]
++    # Unobserved texels stay black rather than producing NaNs during export.
++    tex_image = tex_image/weight_tex_image.clamp_min(1)[...,None]
+     tex_image = tex_image.data.cpu().numpy()
+     tex_image = np.clip(tex_image,0,255).astype(np.uint8)
+     tex_image = tex_image[::-1].copy()
+-    mesh.visual = trimesh.visual.texture.TextureVisuals(uv=mesh.visual.uv,image=Image.fromarray(tex_image))
++    material = trimesh.visual.material.PBRMaterial(
++      baseColorTexture=Image.fromarray(tex_image),
++      baseColorFactor=[255,255,255,255], metallicFactor=0.0, roughnessFactor=0.8)
++    mesh.visual = trimesh.visual.texture.TextureVisuals(uv=mesh.visual.uv, material=material)
+     return mesh
+ 

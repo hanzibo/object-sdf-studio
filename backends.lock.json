@@ -1,0 +1,17 @@
+{
+  "BundleSDF": {
+    "url": "https://github.com/NVlabs/BundleSDF.git",
+    "commit": "ffa67d425240b5b76d2e387a7dd3d3735a7cf1a1",
+    "license": "LICENSES/NVIDIA-BundleSDF.txt"
+  },
+  "FoundationPose": {
+    "url": "https://github.com/NVlabs/FoundationPose.git",
+    "commit": "a1b694b83e633c2cb6115b9063d940a687759392",
+    "license": "LICENSES/NVIDIA-FoundationPose.txt"
+  },
+  "sam3": {
+    "url": "https://github.com/facebookresearch/sam3.git",
+    "commit": "0570b3a5be9c4e694f23d85232fb55f4a6f1f7fc",
+    "license": "LICENSES/SAM3.txt"
+  }
+}

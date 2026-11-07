@@ -1,0 +1,51 @@
+{
+  "note": "Observed working-environment metadata, not a complete lockfile or clean-install guarantee. Qt was supplied by system PySide6 6.10.2.",
+  "environments": {
+    "object-studio-reference": {
+      "python": "3.11.16",
+      "packages": {
+        "numpy": "1.26.4",
+        "opencv-python": "4.11.0.86",
+        "Pillow": "12.3.0",
+        "open3d": "0.18.0",
+        "pyorbbecsdk2": "2.1.2"
+      }
+    },
+    "sam3": {
+      "python": "3.12.15",
+      "packages": {
+        "torch": "2.10.0+cu128",
+        "torchvision": "0.25.0+cu128",
+        "numpy": "1.26.4",
+        "opencv-python": "4.11.0.86",
+        "Pillow": "12.3.0"
+      }
+    },
+    "bundlesdf": {
+      "python": "3.11.16",
+      "packages": {
+        "torch": "2.6.0+cu124",
+        "torchvision": "0.21.0+cu124",
+        "numpy": "1.26.4",
+        "opencv-python": "4.10.0.84",
+        "Pillow": "12.3.0",
+        "kornia": "0.6.12",
+        "trimesh": "5.1.0",
+        "open3d": "0.20.0"
+      }
+    },
+    "foundationpose": {
+      "python": "3.11.16",
+      "packages": {
+        "torch": "2.6.0+cu124",
+        "torchvision": "0.21.0+cu124",
+        "numpy": "2.4.6",
+        "opencv-python": "5.0.0.93",
+        "Pillow": "12.3.0",
+        "kornia": "0.8.3",
+        "trimesh": "5.1.0",
+        "open3d": "0.20.0"
+      }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "conda_envs": "${HOME}/miniconda3/envs",
+  "camera_python": "${HOME}/miniconda3/envs/object-studio/bin/python",
+  "gui_python": "${HOME}/miniconda3/envs/object-studio/bin/python",
+  "sam_project": "third_party/sam3",
+  "sam_checkpoint": "checkpoints/sam3/sam3.pt",
+  "bundle_project": "third_party/BundleSDF",
+  "pose_project": "third_party/FoundationPose"
+}

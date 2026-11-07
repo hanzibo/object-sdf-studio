@@ -1,0 +1,3 @@
+# Patch context must be preserved, including the leading space on blank lines.
+*.patch -whitespace
+LICENSES/*.txt whitespace=cr-at-eol

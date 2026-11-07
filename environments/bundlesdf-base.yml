@@ -1,0 +1,16 @@
+name: bundlesdf
+channels: [conda-forge]
+dependencies:
+  - python=3.11
+  - pip
+  - cmake>=3.27,<4
+  - ninja
+  - eigen
+  - boost-cpp
+  - pybind11
+  - cxx-compiler
+  - pip:
+      - numpy==1.26.4
+      - kornia==0.6.12
+      - trimesh==5.1.0
+# Base only: CUDA/OpenCV/PCL and remaining upstream dependencies are installed separately.

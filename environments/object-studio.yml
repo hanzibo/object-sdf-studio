@@ -1,0 +1,11 @@
+name: object-studio
+channels: [conda-forge]
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - PySide6>=6.8,<7
+      - numpy==1.26.4
+      - opencv-python==4.11.0.86
+      - Pillow>=10,<13
+      - pyorbbecsdk2==2.1.2

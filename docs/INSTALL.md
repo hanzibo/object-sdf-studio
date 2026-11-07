@@ -16,6 +16,8 @@ python3 tools/doctor.py --imports
 
 ## 2. 新建 GUI / 相机环境
 
+Ubuntu 精简系统还需 Qt 运行库，例如 `sudo apt-get install libegl1 libgl1 libopengl0 libxkbcommon0`；缺少 `libEGL.so.1` 时 Python 包本身安装成功也无法启动 Qt。
+
 ```bash
 conda env create -f environments/object-studio.yml
 conda activate object-studio
@@ -74,7 +76,7 @@ cmake --build third_party/BundleSDF/BundleTrack/build --target my_cpp --parallel
 
 架构号、编译器以及 CUDA toolkit 必须匹配本机。补丁用于已知 CMake/PCL/Trimesh 等兼容问题，不代替所有平台适配。避免直接运行含固定系统 Python 路径和 `rm -rf build` 的旧 `build.sh`。
 
-按 [BundleSDF 权重说明](https://github.com/NVlabs/BundleSDF#download-pretrained-models) 下载所需匹配模型到上游要求的位置（检查 `loftr_wrapper.py`，默认 `BundleTrack/LoFTR/weights/outdoor_ds.ckpt`）；不需要下载官方 demo 才能处理自采数据。
+按 [BundleSDF 权重说明](https://github.com/NVlabs/BundleSDF#data-download) 下载所需匹配模型到上游要求的位置（检查 `loftr_wrapper.py`，默认 `BundleTrack/LoFTR/weights/outdoor_ds.ckpt`）；不需要下载官方 demo 才能处理自采数据。
 
 ## 6. FoundationPose
 
